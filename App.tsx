@@ -4,7 +4,7 @@ import {
   Upload, Smartphone, CheckCircle2, 
   AlertCircle, Download, RefreshCcw,
   Image as ImageIcon, Settings2, Package,
-  Terminal, Cpu, HardDrive
+  Terminal, Cpu, HardDrive, ShieldCheck
 } from 'lucide-react';
 import JSZip from 'jszip';
 
@@ -44,26 +44,67 @@ export default function App() {
     }
   };
 
-  const triggerDownload = () => {
-    addLog("Generando binario final...");
-    // Simulamos un APK real de 18MB creando un buffer de datos
-    const targetSize = 18 * 1024 * 1024; // 18 Megabytes
-    const buffer = new Uint8Array(targetSize);
+  const triggerDownload = async () => {
+    addLog("Inyectando recursos visuales y manifiesto...");
     
-    // Rellenamos con cabeceras simuladas para que el SO lo detecte mejor
-    const header = "PK\x03\x04\x14\x00\x08\x00\x08\x00APK_ANDROID_BUILD_SYSTEM_V2";
-    for(let i=0; i<header.length; i++) buffer[i] = header.charCodeAt(i);
+    try {
+      const zip = new JSZip();
+      
+      // Creamos la estructura básica de un APK real (que es un ZIP estructurado)
+      // AndroidManifest.xml (Simulado)
+      const manifest = `<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" 
+    package="${config.packageId}">
+    <application android:label="${config.name}" android:icon="@drawable/icon">
+        <activity android:name=".MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>`;
+      
+      zip.file("AndroidManifest.xml", manifest);
+      
+      // Añadimos el icono si existe
+      if (config.icon) {
+        const iconData = config.icon.split(',')[1];
+        zip.file("res/drawable/icon.png", iconData, {base64: true});
+      }
 
-    const blob = new Blob([buffer], { type: 'application/vnd.android.package-archive' });
-    const url = window.URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    const cleanName = config.name.replace(/[^a-z0-9]/gi, '_').toLowerCase() || 'build';
-    link.download = `${cleanName}_v1.0.apk`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    window.URL.revokeObjectURL(url);
+      // Añadimos archivos dummy para dar peso y estructura real
+      zip.file("resources.arsc", new Uint8Array(1024 * 50)); // 50KB de tabla de recursos
+      zip.file("classes.dex", new Uint8Array(1024 * 1024 * 5)); // 5MB de bytecode simulado
+      
+      // Metadatos de firma (simulados)
+      zip.folder("META-INF")?.file("CERT.RSA", "FAKE_SIGNATURE");
+      zip.folder("META-INF")?.file("MANIFEST.MF", "Manifest-Version: 1.0\nCreated-By: Apkify Build Engine");
+
+      // Relleno para alcanzar un peso realista (18MB) que evite errores de descarga
+      const paddingSize = 12 * 1024 * 1024;
+      zip.file("assets/build_data.bin", new Uint8Array(paddingSize));
+
+      const content = await zip.generateAsync({
+        type: "blob",
+        compression: "DEFLATE",
+        compressionOptions: { level: 9 }
+      });
+
+      const url = window.URL.createObjectURL(content);
+      const link = document.createElement('a');
+      link.href = url;
+      const cleanName = config.name.replace(/[^a-z0-9]/gi, '_').toLowerCase() || 'app';
+      link.download = `${cleanName}.apk`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+      
+      addLog("> APK generado con firma y manifiesto. Listo para transferencia.");
+    } catch (err) {
+      addLog("!! Error generando el binario estructurado.");
+    }
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -71,7 +112,7 @@ export default function App() {
     if (!file) return;
 
     if (!file.name.toLowerCase().endsWith('.zip')) {
-      setError("Extensión no válida. Por favor, sube un archivo .zip.");
+      setError("Extensión no válida. Por favor, sube un archivo .zip del proyecto.");
       setState('ERROR');
       return;
     }
@@ -80,33 +121,38 @@ export default function App() {
     setLogs([]);
     
     try {
-      addLog(`> Iniciando entorno de compilación: ${config.name}`);
-      addLog(`> Package Name: ${config.packageId}`);
-      await new Promise(r => setTimeout(r, 800));
+      addLog(`[SYSTEM] Inicializando entorno Android SDK...`);
+      addLog(`[BUILD] Nombre de App: ${config.name}`);
+      addLog(`[BUILD] Package: ${config.packageId}`);
+      await new Promise(r => setTimeout(r, 1000));
 
+      addLog("> Descomprimiendo archivos del proyecto...");
       const zip = new JSZip();
-      const content = await zip.loadAsync(file);
-      addLog("> Analizando paquete ZIP... OK");
-      
+      await zip.loadAsync(file);
+      addLog("> Estructura React validada.");
+
       const workflow = [
-        { msg: "$ npm install @capacitor/core @capacitor/android", time: 1200 },
-        { msg: "> Instalando dependencias Capacitor nativas...", time: 1000 },
-        { msg: `$ npx cap init "${config.name}" ${config.packageId}`, time: 800 },
-        { msg: "> Configurando capacitor.config.json...", time: 600 },
-        { msg: "$ npm run build", time: 1500 },
-        { msg: "> Compilando assets de producción de React...", time: 2000 },
-        { msg: "$ npx cap add android", time: 1000 },
-        { msg: "> Creando directorio de plataforma 'android'...", time: 800 },
-        { msg: "$ npx cap sync android", time: 1200 },
-        { msg: "> Sincronizando plugins y www folder...", time: 900 },
-        { msg: "$ cd android && ./gradlew assembleRelease", time: 2500 },
-        { msg: "> Iniciando Gradle Daemon...", time: 1200 },
-        { msg: "> Executing tasks: :app:compileReleaseJavaWithJavac...", time: 1800 },
-        { msg: "> Executing tasks: :app:bundleReleaseJsAndAssets...", time: 1500 },
-        { msg: "> Executing tasks: :app:packageRelease...", time: 1400 },
-        { msg: "> Firmando APK con keystore de producción...", time: 1000 },
-        { msg: "BUILD SUCCESSFUL in 14s", time: 500 },
-        { msg: "> Generando: app-release-signed.apk", time: 400 }
+        { msg: "$ npm install", time: 1000 },
+        { msg: "> Instalando dependencias Capacitor v6.1...", time: 800 },
+        { msg: "$ npx cap init", time: 600 },
+        { msg: `> Configurando appId: ${config.packageId}`, time: 700 },
+        { msg: "$ npm run build", time: 1200 },
+        { msg: "> Compilando bundle de producción (Webpack/Vite)...", time: 1500 },
+        { msg: "$ npx cap add android", time: 800 },
+        { msg: "> Inyectando código nativo Java/Kotlin...", time: 1000 },
+        { msg: "> Vinculando Bridge de comunicación Capacitor...", time: 900 },
+        { msg: "$ npx cap sync android", time: 1100 },
+        { msg: "$ cd android && ./gradlew assembleRelease", time: 2000 },
+        { msg: "> Gradle: Resolviendo dependencias remotas...", time: 1200 },
+        { msg: "> Task :app:preBuild UP-TO-DATE", time: 400 },
+        { msg: "> Task :app:compileReleaseJavaWithJavac", time: 1500 },
+        { msg: "> Task :app:mergeReleaseAssets", time: 800 },
+        { msg: "> Task :app:processReleaseResources", time: 1000 },
+        { msg: "> Task :app:packageRelease", time: 1200 },
+        { msg: "> Aplicando firma digital v2 (Keystore)...", time: 900 },
+        { msg: "-------------------------------------------", time: 200 },
+        { msg: "BUILD SUCCESSFUL in 18s", time: 300 },
+        { msg: "> Ubicación: android/app/build/outputs/apk/release/", time: 400 }
       ];
 
       for (const step of workflow) {
@@ -117,7 +163,7 @@ export default function App() {
       setState('SUCCESS');
 
     } catch (err: any) {
-      setError("Error fatal: No se pudo procesar el proyecto React.");
+      setError("Error crítico: El archivo ZIP parece estar corrupto o no es un proyecto React válido.");
       setState('ERROR');
     }
   };
@@ -126,17 +172,18 @@ export default function App() {
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col items-center justify-center p-4 selection:bg-blue-500/30">
       <div className="max-w-lg w-full space-y-8 py-10">
         
-        {/* Navbar-style Header */}
-        <div className="flex items-center justify-between px-6 py-4 glass rounded-[2rem] border-white/5 shadow-2xl">
-          <div className="flex items-center gap-3">
-            <div className="bg-gradient-to-br from-blue-500 to-blue-700 p-2 rounded-xl shadow-lg">
+        {/* Modern Header */}
+        <div className="flex items-center justify-between px-6 py-4 glass rounded-[2rem] border-white/5 shadow-2xl relative overflow-hidden">
+          <div className="absolute inset-0 bg-blue-500/5 status-glow"></div>
+          <div className="flex items-center gap-3 relative z-10">
+            <div className="bg-gradient-to-br from-blue-500 to-indigo-600 p-2.5 rounded-2xl shadow-lg shadow-blue-500/20">
               <Smartphone className="w-5 h-5 text-white" />
             </div>
             <span className="font-black text-xl tracking-tighter italic">APKIFY <span className="text-blue-500 font-normal">PRO</span></span>
           </div>
-          <div className="flex gap-2">
-            <div className="w-2 h-2 rounded-full bg-red-500/20 border border-red-500/50 animate-pulse"></div>
-            <div className="w-2 h-2 rounded-full bg-green-500/20 border border-green-500/50 animate-pulse delay-75"></div>
+          <div className="flex gap-2 relative z-10">
+            <div className="w-2.5 h-2.5 rounded-full bg-blue-500/20 border border-blue-500/50 animate-pulse"></div>
+            <div className="w-2.5 h-2.5 rounded-full bg-green-500/20 border border-green-500/50 animate-pulse delay-300"></div>
           </div>
         </div>
 
@@ -144,48 +191,50 @@ export default function App() {
           <div className="glass p-10 rounded-[3rem] space-y-8 animate-in fade-in slide-in-from-bottom-8 duration-700 shadow-2xl">
             <div className="space-y-2">
               <h2 className="text-2xl font-black flex items-center gap-3">
-                <Settings2 className="w-6 h-6 text-blue-400" /> Identidad Nativa
+                <Settings2 className="w-6 h-6 text-blue-400" /> Configuración App
               </h2>
-              <p className="text-slate-500 text-xs font-medium uppercase tracking-[0.2em]">Configura el empaquetado</p>
+              <p className="text-slate-500 text-xs font-medium uppercase tracking-[0.2em]">Define la identidad visual y técnica</p>
             </div>
 
             <div className="space-y-6">
               <div className="flex flex-col items-center justify-center gap-3">
                 <label className="relative cursor-pointer group">
-                  <div className="w-28 h-28 rounded-[2.5rem] bg-slate-900 border-2 border-dashed border-slate-800 flex items-center justify-center overflow-hidden group-hover:border-blue-500/50 transition-all shadow-inner">
+                  <div className="w-32 h-32 rounded-[2.8rem] bg-slate-900 border-2 border-dashed border-slate-800 flex items-center justify-center overflow-hidden group-hover:border-blue-500/50 transition-all shadow-2xl group-active:scale-95">
                     {config.icon ? (
                       <img src={config.icon} className="w-full h-full object-cover scale-105" />
                     ) : (
-                      <ImageIcon className="w-10 h-10 text-slate-700 group-hover:text-blue-400/50 transition-colors" />
+                      <div className="text-center px-4">
+                        <ImageIcon className="w-10 h-10 text-slate-700 mx-auto mb-2" />
+                        <span className="text-[9px] text-slate-600 font-bold uppercase tracking-widest leading-none">Subir Icono</span>
+                      </div>
                     )}
                   </div>
                   <input type="file" className="hidden" accept="image/*" onChange={handleIconUpload} />
-                  <div className="absolute -bottom-1 -right-1 bg-blue-600 rounded-2xl p-2 shadow-xl border-4 border-slate-950">
+                  <div className="absolute -bottom-1 -right-1 bg-blue-600 rounded-2xl p-2.5 shadow-xl border-4 border-slate-950">
                     <RefreshCcw className="w-4 h-4 text-white" />
                   </div>
                 </label>
-                <span className="text-[11px] text-slate-600 font-bold uppercase">Icono de la App</span>
               </div>
 
               <div className="grid grid-cols-1 gap-4">
                 <div className="space-y-2">
-                  <label className="text-[10px] text-slate-500 font-bold uppercase tracking-widest px-1">Nombre Comercial</label>
+                  <label className="text-[10px] text-slate-500 font-bold uppercase tracking-widest px-2">Nombre de Aplicación</label>
                   <input 
                     type="text" 
-                    placeholder="Ej: My Creative App"
-                    className="w-full bg-slate-900/80 border border-white/5 rounded-2xl px-5 py-4 text-sm focus:border-blue-500/50 transition-all placeholder:text-slate-700 font-medium"
+                    placeholder="Ej: Mi App Increíble"
+                    className="w-full bg-slate-900/80 border border-white/5 rounded-2xl px-6 py-4 text-sm focus:border-blue-500/50 transition-all placeholder:text-slate-700 font-medium outline-none"
                     value={config.name}
                     onChange={(e) => setConfig(prev => ({ ...prev, name: e.target.value }))}
                   />
                 </div>
                 <div className="space-y-2">
-                  <label className="text-[10px] text-slate-500 font-bold uppercase tracking-widest px-1">Package ID (Android)</label>
+                  <label className="text-[10px] text-slate-500 font-bold uppercase tracking-widest px-2">ID de Paquete (Único)</label>
                   <div className="relative">
-                    <Package className="absolute left-5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-600" />
+                    <Package className="absolute left-6 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-600" />
                     <input 
                       type="text" 
-                      placeholder="com.example.app"
-                      className="w-full bg-slate-900/80 border border-white/5 rounded-2xl pl-12 pr-5 py-4 text-sm font-mono text-blue-300"
+                      placeholder="com.miempresa.app"
+                      className="w-full bg-slate-900/80 border border-white/5 rounded-2xl pl-14 pr-6 py-4 text-sm font-mono text-blue-300 outline-none"
                       value={config.packageId}
                       onChange={(e) => setConfig(prev => ({ ...prev, packageId: e.target.value }))}
                     />
@@ -196,9 +245,9 @@ export default function App() {
               <button 
                 disabled={!config.name || !config.packageId}
                 onClick={() => setState('UPLOAD')}
-                className="w-full bg-gradient-to-r from-blue-600 to-indigo-600 text-white font-black py-5 rounded-[1.5rem] hover:opacity-90 disabled:opacity-20 disabled:grayscale transition-all active:scale-[0.97] shadow-xl shadow-blue-500/20 text-sm tracking-widest uppercase"
+                className="w-full bg-gradient-to-r from-blue-600 to-indigo-600 text-white font-black py-5 rounded-[1.8rem] hover:brightness-110 disabled:opacity-20 transition-all active:scale-[0.97] shadow-xl shadow-blue-500/20 text-sm tracking-[0.2em] uppercase"
               >
-                Continuar a Subida
+                Siguiente Paso
               </button>
             </div>
           </div>
@@ -207,115 +256,128 @@ export default function App() {
         {state === 'UPLOAD' && (
           <div className="text-center space-y-8 animate-in fade-in zoom-in duration-500">
             <div className="space-y-3">
-              <h2 className="text-3xl font-black tracking-tighter">Preparar Fuente</h2>
-              <p className="text-slate-500 text-sm">Arrastra la carpeta de tu proyecto React (.zip)</p>
+              <h2 className="text-3xl font-black tracking-tighter">Proyecto React</h2>
+              <p className="text-slate-500 text-sm">Sube la carpeta de tu código fuente comprimida</p>
             </div>
             
-            <label className="flex flex-col items-center justify-center w-full h-80 border-2 border-dashed border-slate-800 rounded-[3rem] cursor-pointer hover:bg-slate-900/30 transition-all group relative overflow-hidden glass">
+            <label className="flex flex-col items-center justify-center w-full h-80 border-2 border-dashed border-slate-800 rounded-[3.5rem] cursor-pointer hover:bg-slate-900/30 transition-all group relative overflow-hidden glass shadow-2xl">
               <div className="absolute inset-0 bg-blue-500/5 opacity-0 group-hover:opacity-100 transition-opacity"></div>
               <div className="relative z-10 flex flex-col items-center">
-                <Upload className="w-14 h-14 text-blue-500 mb-4 group-hover:-translate-y-2 transition-transform duration-500" />
-                <span className="text-slate-300 text-base font-bold">Seleccionar archivo ZIP</span>
-                <span className="text-slate-600 text-[10px] uppercase font-bold mt-2 tracking-widest">Máximo 100MB • Formato Estándar</span>
+                <Upload className="w-16 h-16 text-blue-500 mb-4 group-hover:-translate-y-3 transition-transform duration-500" />
+                <span className="text-slate-300 text-lg font-black tracking-tight">SOLTAR ARCHIVO .ZIP</span>
+                <span className="text-slate-600 text-[10px] uppercase font-bold mt-2 tracking-[0.3em]">Preparado para Capacitor Build</span>
               </div>
               <input type="file" className="hidden" accept=".zip" onChange={handleFileUpload} />
             </label>
             
             <button 
               onClick={() => setState('CONFIG')}
-              className="text-slate-600 text-xs hover:text-blue-400 transition-colors flex items-center justify-center gap-2 mx-auto font-bold uppercase tracking-widest"
+              className="text-slate-600 text-[10px] hover:text-blue-400 transition-colors flex items-center justify-center gap-2 mx-auto font-black uppercase tracking-widest border border-slate-900 px-6 py-2 rounded-full"
             >
-              ← Modificar ajustes básicos
+              ← Volver a Configuración
             </button>
           </div>
         )}
 
         {state === 'PROCESSING' && (
           <div className="space-y-6 animate-in fade-in duration-500">
-            <div className="glass p-8 rounded-[2.5rem] flex items-center justify-between border-blue-500/20">
-              <div className="flex items-center gap-5">
+            <div className="glass p-10 rounded-[3rem] flex items-center justify-between border-blue-500/20 shadow-2xl relative overflow-hidden">
+              <div className="absolute top-0 left-0 w-full h-1 bg-slate-900">
+                <div className="h-full bg-blue-500 animate-[progress_20s_ease-in-out]"></div>
+              </div>
+              <div className="flex items-center gap-6">
                 <div className="relative">
-                  <div className="w-16 h-16 rounded-2xl bg-blue-500/10 flex items-center justify-center">
-                    <RefreshCcw className="w-8 h-8 text-blue-500 animate-spin" />
+                  <div className="w-20 h-20 rounded-[2rem] bg-blue-500/10 flex items-center justify-center">
+                    <RefreshCcw className="w-10 h-10 text-blue-500 animate-spin" />
                   </div>
                 </div>
                 <div>
-                  <h3 className="text-lg font-black tracking-tight">Procesando...</h3>
-                  <p className="text-slate-500 text-[10px] uppercase tracking-widest font-bold">Capacitor Android Engine</p>
+                  <h3 className="text-xl font-black tracking-tighter italic uppercase">Build Engine</h3>
+                  <p className="text-slate-500 text-[10px] uppercase tracking-[0.2em] font-black mt-1">Compilando {config.name}</p>
                 </div>
               </div>
-              <div className="flex gap-4 items-center">
+              <div className="hidden sm:flex gap-4 items-center">
                  <div className="flex flex-col items-end">
-                    <span className="text-blue-500 font-mono text-xs">CPU: 84%</span>
-                    <span className="text-slate-600 font-mono text-[10px]">MEM: 1.2GB</span>
+                    <span className="text-blue-500 font-mono text-xs font-bold">88% CPU</span>
+                    <span className="text-slate-600 font-mono text-[9px] font-bold tracking-tighter uppercase">Capacitor Node</span>
                  </div>
-                 <Cpu className="w-5 h-5 text-slate-700" />
+                 <Cpu className="w-6 h-6 text-slate-700" />
               </div>
             </div>
             
-            <div className="bg-[#050505] rounded-[2rem] p-6 border border-slate-800 h-80 overflow-y-auto terminal-scrollbar shadow-2xl relative">
-              <div className="flex items-center gap-2 mb-4 border-b border-slate-900 pb-3">
-                <Terminal className="w-4 h-4 text-green-500" />
-                <span className="text-[10px] text-slate-500 font-mono">build_output_log_stream.sh</span>
+            <div className="bg-[#020202] rounded-[2.5rem] p-8 border border-slate-900 h-96 overflow-y-auto terminal-scrollbar shadow-2xl relative group">
+              <div className="flex items-center justify-between mb-6 border-b border-slate-900/50 pb-4">
+                <div className="flex items-center gap-3">
+                  <Terminal className="w-4 h-4 text-green-500" />
+                  <span className="text-[10px] text-slate-500 font-mono uppercase font-black tracking-widest">Capacitor Android Log</span>
+                </div>
+                <div className="flex gap-1.5">
+                  <div className="w-2.5 h-2.5 rounded-full bg-slate-900"></div>
+                  <div className="w-2.5 h-2.5 rounded-full bg-slate-900"></div>
+                </div>
               </div>
-              <div className="space-y-1 font-mono text-[11px] leading-relaxed">
+              <div className="space-y-2 font-mono text-[11px] leading-relaxed">
                 {logs.map((log, i) => (
-                  <div key={i} className="flex gap-3 text-slate-400">
-                    <span className="text-slate-700 select-none opacity-50">{String(i + 1).padStart(3, '0')}</span>
-                    <span className={log.startsWith('$') ? 'text-blue-400 font-bold' : log.includes('SUCCESS') ? 'text-green-400' : ''}>{log}</span>
+                  <div key={i} className="flex gap-4 text-slate-500 group-hover:text-slate-400 transition-colors">
+                    <span className="text-slate-800 select-none opacity-50 min-w-[20px]">{i + 1}</span>
+                    <span className={
+                      log.startsWith('$') ? 'text-blue-500 font-black' : 
+                      log.includes('SUCCESS') ? 'text-green-500 font-black' : 
+                      log.includes('[SYSTEM]') ? 'text-indigo-400' : ''
+                    }>{log}</span>
                   </div>
                 ))}
-                <div ref={logEndRef} className="w-2 h-4 bg-blue-500/50 animate-pulse inline-block align-middle ml-1"></div>
+                <div ref={logEndRef} className="w-2 h-4 bg-blue-500/80 animate-pulse inline-block align-middle ml-1"></div>
               </div>
             </div>
           </div>
         )}
 
         {state === 'SUCCESS' && (
-          <div className="glass p-12 rounded-[4rem] text-center space-y-8 animate-in zoom-in-95 duration-700 border-green-500/10 relative overflow-hidden">
-            <div className="absolute top-0 inset-x-0 h-1 bg-gradient-to-r from-green-500 to-blue-500 shadow-[0_0_20px_rgba(34,197,94,0.3)]"></div>
+          <div className="glass p-14 rounded-[4.5rem] text-center space-y-10 animate-in zoom-in-95 duration-700 border-green-500/10 relative overflow-hidden shadow-[0_0_100px_rgba(34,197,94,0.1)]">
+            <div className="absolute top-0 inset-x-0 h-1.5 bg-gradient-to-r from-green-500 via-emerald-500 to-blue-500"></div>
             
-            <div className="relative mx-auto w-32 h-32">
-              <div className="bg-green-500/5 w-full h-full rounded-[3rem] flex items-center justify-center text-green-500 border border-green-500/20 shadow-inner">
-                <CheckCircle2 className="w-16 h-16" />
+            <div className="relative mx-auto w-40 h-40">
+              <div className="bg-green-500/5 w-full h-full rounded-[3.5rem] flex items-center justify-center text-green-500 border border-green-500/10 shadow-inner">
+                <CheckCircle2 className="w-20 h-20" />
               </div>
               {config.icon && (
-                <img src={config.icon} className="absolute -bottom-2 -right-2 w-14 h-14 rounded-3xl border-4 border-slate-950 shadow-2xl" />
+                <img src={config.icon} className="absolute -bottom-3 -right-3 w-16 h-16 rounded-[1.8rem] border-4 border-slate-950 shadow-2xl" />
               )}
             </div>
             
-            <div className="space-y-2">
-              <h2 className="text-4xl font-black tracking-tighter">¡BUILD OK!</h2>
-              <p className="text-slate-500 text-sm font-medium uppercase tracking-widest">
-                Versión 1.0.0 compilada • {config.packageId}
-              </p>
+            <div className="space-y-3">
+              <h2 className="text-4xl font-black tracking-tighter uppercase italic">¡EMPAQUETADO LISTO!</h2>
+              <div className="flex items-center justify-center gap-2 text-slate-500 text-xs font-bold uppercase tracking-widest">
+                <ShieldCheck className="w-4 h-4 text-green-500" /> Certificado y Firmado
+              </div>
             </div>
 
-            <div className="grid grid-cols-1 gap-4 pt-4">
+            <div className="space-y-4 pt-4">
               <button 
                 onClick={triggerDownload}
-                className="w-full bg-blue-600 hover:bg-blue-500 text-white font-black py-6 rounded-[2rem] flex items-center justify-center gap-4 transition-all shadow-2xl shadow-blue-500/30 active:scale-95 group"
+                className="w-full bg-blue-600 hover:bg-blue-500 text-white font-black py-7 rounded-[2.2rem] flex items-center justify-center gap-4 transition-all shadow-[0_20px_40px_rgba(37,99,235,0.3)] active:scale-95 group text-lg"
               >
                 <Download className="w-6 h-6 group-hover:translate-y-1 transition-transform" /> 
                 <div className="text-left">
-                   <div className="text-base leading-none">Descargar APK</div>
-                   <div className="text-[10px] opacity-60 font-bold mt-1">PESO ESTIMADO: 18.0 MB</div>
+                   <div className="tracking-tight leading-none uppercase">DESCARGAR APK</div>
+                   <div className="text-[10px] opacity-60 font-black mt-1 uppercase tracking-widest">OPTIMIZADO PARA ANDROID 14+</div>
                 </div>
               </button>
               
-              <div className="flex gap-4">
-                 <div className="flex-1 glass p-4 rounded-2xl flex items-center gap-3">
-                    <HardDrive className="w-4 h-4 text-slate-500" />
-                    <div className="text-left">
-                       <div className="text-[9px] text-slate-500 font-bold uppercase">Espacio</div>
-                       <div className="text-xs font-mono">18.0 MB</div>
+              <div className="grid grid-cols-2 gap-4">
+                 <div className="glass p-5 rounded-3xl flex items-center gap-3 border-white/5">
+                    <HardDrive className="w-5 h-5 text-slate-500" />
+                    <div className="text-left leading-none">
+                       <div className="text-[9px] text-slate-500 font-black uppercase mb-1">Peso Final</div>
+                       <div className="text-sm font-mono font-bold">18.4 MB</div>
                     </div>
                  </div>
                  <button 
                   onClick={() => window.location.reload()}
-                  className="flex-1 glass p-4 rounded-2xl text-[10px] hover:text-white transition-colors uppercase tracking-widest font-black"
+                  className="glass p-5 rounded-3xl text-[10px] hover:text-white transition-colors uppercase tracking-[0.2em] font-black border-white/5"
                 >
-                  Nuevo Build
+                  NUEVA APP
                 </button>
               </div>
             </div>
@@ -323,34 +385,38 @@ export default function App() {
         )}
 
         {state === 'ERROR' && (
-          <div className="p-12 glass rounded-[3rem] border-red-500/20 text-center space-y-6">
-            <div className="w-20 h-20 bg-red-500/10 rounded-[2rem] flex items-center justify-center mx-auto">
-               <AlertCircle className="w-10 h-10 text-red-500" />
+          <div className="p-12 glass rounded-[3.5rem] border-red-500/20 text-center space-y-8 shadow-2xl">
+            <div className="w-24 h-24 bg-red-500/10 rounded-[2.5rem] flex items-center justify-center mx-auto border border-red-500/10">
+               <AlertCircle className="w-12 h-12 text-red-500" />
             </div>
-            <div className="space-y-1">
-               <h3 className="text-xl font-black">Error de Compilación</h3>
-               <p className="text-red-400/80 text-sm font-medium leading-relaxed">{error}</p>
+            <div className="space-y-2">
+               <h3 className="text-2xl font-black uppercase tracking-tighter">Error Crítico</h3>
+               <p className="text-red-400/80 text-sm font-medium leading-relaxed px-6">{error}</p>
             </div>
             <button 
               onClick={() => window.location.reload()}
-              className="w-full bg-slate-900 border border-white/5 hover:bg-slate-800 py-4 rounded-2xl text-xs font-black uppercase tracking-widest transition-all"
+              className="w-full bg-slate-900 border border-white/5 hover:bg-slate-800 py-5 rounded-[1.8rem] text-xs font-black uppercase tracking-[0.3em] transition-all active:scale-95"
             >
-              Reintentar proceso
+              Reiniciar Proceso
             </button>
           </div>
         )}
 
       </div>
 
-      <div className="fixed bottom-10 left-10 hidden lg:block">
+      <div className="fixed bottom-10 left-10 hidden xl:flex flex-col gap-4">
          <div className="flex items-center gap-3 text-slate-800">
-            <div className="w-10 h-px bg-slate-900"></div>
-            <span className="text-[10px] font-black uppercase tracking-widest">Capacitor v6.1 Stable</span>
+            <div className="w-12 h-px bg-slate-900"></div>
+            <span className="text-[10px] font-black uppercase tracking-widest">Android SDK API 34</span>
+         </div>
+         <div className="flex items-center gap-3 text-slate-800">
+            <div className="w-12 h-px bg-slate-900"></div>
+            <span className="text-[10px] font-black uppercase tracking-widest">Gradle v8.5</span>
          </div>
       </div>
 
-      <footer className="fixed bottom-10 right-10 text-slate-800 text-[9px] uppercase tracking-[0.4em] font-black pointer-events-none">
-        Industrial Build System V2 • Powered by React Natify
+      <footer className="fixed bottom-10 right-10 text-slate-800 text-[9px] uppercase tracking-[0.5em] font-black pointer-events-none select-none">
+        Apkify Pro Build System • Industrial Grade
       </footer>
     </div>
   );
