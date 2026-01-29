@@ -1,0 +1,8 @@
+{
+  "name": "Apkify AI - Convertidor de React a APK",
+  "description": "Una plataforma impulsada por IA para preparar, optimizar y orquestar la conversión de proyectos React en aplicaciones Android (APK) utilizando Capacitor y análisis de Gemini.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
